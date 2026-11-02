@@ -2,28 +2,28 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Schedule Submission Reminder</title>
 <style>
-  body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; background: #f5f7fb; color: #222; }
-  h1 { font-size: 1.5rem; }
-  h3 { margin-top: 0; }
-  .card { background: #fff; border-radius: 10px; padding: 1rem; margin-bottom: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
-  form { display: grid; gap: .6rem; }
-  label { display: grid; gap: .25rem; font-size: .95rem; }
-  input, select, button { padding: .5rem; font-size: 1rem; border-radius: 6px; border: 1px solid #ccc; }
+  body { font-family: system-ui, sans-serif; max-width: 720px; margin: 0 auto; padding: 16px; background: #f5f7fb; color: #222; }
+  h1 { font-size: 1.4rem; }
+  h3 { margin: 0 0 8px; }
+  .card { background: #fff; border-radius: 10px; padding: 14px; margin-bottom: 14px; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+  form { display: grid; gap: 10px; }
+  label { display: grid; gap: 4px; font-size: .95rem; }
+  input, select, button { padding: 10px; font-size: 1rem; border-radius: 6px; border: 1px solid #ccc; box-sizing: border-box; width: 100%; }
   button { cursor: pointer; background: #2563eb; color: #fff; border: none; }
   button.secondary { background: #6b7280; }
   button.danger { background: #dc2626; }
   button.success { background: #16a34a; }
-  .item { display: flex; justify-content: space-between; align-items: center; gap: 1rem; border-bottom: 1px solid #eee; padding: .7rem 0; flex-wrap: wrap; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+  .row button { width: auto; flex: 1; }
+  .item { border-bottom: 1px solid #eee; padding: 10px 0; }
   .item:last-child { border-bottom: none; }
-  .info { flex: 1; min-width: 200px; }
-  .actions { display: flex; gap: .4rem; }
-  .overdue { color: #dc2626; font-weight: 600; }
   .done { text-decoration: line-through; color: #888; }
-  .badge { font-size: .75rem; padding: 2px 8px; border-radius: 999px; background: #e5e7eb; margin-left: .3rem; }
-  .alert { background: #fef3c7; border-left: 4px solid #f59e0b; padding: .6rem; margin-bottom: .5rem; border-radius: 6px; }
+  .overdue { color: #dc2626; font-weight: 600; }
+  .badge { font-size: .75rem; padding: 2px 8px; border-radius: 999px; background: #e5e7eb; margin-left: 4px; }
+  .alert { background: #fef3c7; border-left: 4px solid #f59e0b; padding: 8px; margin-bottom: 8px; border-radius: 6px; }
   .muted { color: #666; font-size: .9rem; }
 </style>
 </head>
@@ -32,12 +32,12 @@
 <h1>📅 Schedule Submission Reminder</h1>
 
 <div class="card">
-  <button id="notifyBtn" class="secondary">Enable browser notifications</button>
-  <span id="notifyStatus" class="muted"></span>
+  <button id="notifyBtn" class="secondary">Allow notifications</button>
+  <div id="notifyStatus" class="muted" style="margin-top:6px"></div>
 </div>
 
 <div class="card">
-  <h3>Pending reminders</h3>
+  <h3>Pending now</h3>
   <div id="alerts"></div>
 </div>
 
@@ -71,26 +71,55 @@
 <script>
   const KEY = "schedule-reminders-v1";
   const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+  const HOUR_MS = 60 * 60 * 1000;
+  const NAG_COUNT = 24;               // reminders per deadline: one per hour, 24 hours
+  const LN = window.Capacitor && window.Capacitor.Plugins
+    ? window.Capacitor.Plugins.LocalNotifications : null;
+
   let items = JSON.parse(localStorage.getItem(KEY) || "[]");
   const notified = new Set();
-
   const $ = id => document.getElementById(id);
 
-  function save() {
-    localStorage.setItem(KEY, JSON.stringify(items));
+  function save() { localStorage.setItem(KEY, JSON.stringify(items)); }
+  function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
+  function remindAt(it) { return new Date(it.due).getTime() - (Number(it.lead) || 0) * 60000; }
+  function isOverdue(it) { return !it.submitted && new Date(it.due).getTime() < Date.now(); }
+
+  // Native notification IDs must be integers, so turn each item id into a number
+  function baseId(it) {
+    let h = 0;
+    for (const c of it.id) h = (h * 31 + c.charCodeAt(0)) | 0;
+    return Math.abs(h) % 1000000;
+  }
+  function nativeIds(it) {
+    const b = baseId(it) * NAG_COUNT;
+    return Array.from({ length: NAG_COUNT }, (_, k) => b + k);
   }
 
-  function uid() {
-    return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+  // ---------- Native (Android) notifications ----------
+  async function cancelNative(it) {
+    if (!LN) return;
+    try {
+      await LN.cancel({ notifications: nativeIds(it).map(id => ({ id })) });
+    } catch (e) { /* nothing scheduled */ }
   }
 
-  // Time at which the reminder should start showing
-  function remindAt(it) {
-    return new Date(it.due).getTime() - (Number(it.lead) || 0) * 60000;
-  }
-
-  function isOverdue(it) {
-    return !it.submitted && new Date(it.due).getTime() < Date.now();
+  async function scheduleNative(it) {
+    if (!LN || it.submitted) return;
+    await cancelNative(it);
+    const start = Math.max(remindAt(it), Date.now() + 5000);
+    const ids = nativeIds(it);
+    const list = ids.map((id, k) => ({
+      id,
+      title: "Submit: " + it.title,
+      body: "Due " + new Date(it.due).toLocaleString(),
+      schedule: { at: new Date(start + k * HOUR_MS), allowWhileIdle: true }
+    }));
+    try {
+      await LN.schedule({ notifications: list });
+    } catch (e) {
+      console.error("Could not schedule notification", e);
+    }
   }
 
   // ---------- Rendering ----------
@@ -99,10 +128,7 @@
     box.innerHTML = "";
     const now = Date.now();
     const active = items.filter(it => !it.submitted && now >= remindAt(it));
-    if (!active.length) {
-      box.textContent = "Nothing pending right now. ✅";
-      return;
-    }
+    if (!active.length) { box.textContent = "Nothing pending right now. ✅"; return; }
     active.forEach(it => {
       const div = document.createElement("div");
       div.className = "alert";
@@ -115,99 +141,99 @@
   function render() {
     const list = $("list");
     list.innerHTML = "";
-    if (!items.length) {
-      list.textContent = "No reminders yet. Add one above.";
-      return;
-    }
-    [...items]
-      .sort((a, b) => new Date(a.due) - new Date(b.due))
-      .forEach(it => {
-        const row = document.createElement("div");
-        row.className = "item";
+    if (!items.length) { list.textContent = "No reminders yet. Add one above."; return; }
+    [...items].sort((a, b) => new Date(a.due) - new Date(b.due)).forEach(it => {
+      const row = document.createElement("div");
+      row.className = "item";
 
-        const info = document.createElement("div");
-        info.className = "info";
+      const title = document.createElement("strong");
+      title.textContent = it.title;
+      if (it.submitted) title.className = "done";
 
-        const title = document.createElement("strong");
-        title.textContent = it.title;
-        if (it.submitted) title.className = "done";
+      const meta = document.createElement("div");
+      meta.className = "muted" + (isOverdue(it) ? " overdue" : "");
+      meta.textContent = `Due: ${new Date(it.due).toLocaleString()}` +
+        (isOverdue(it) ? " — OVERDUE" : "") + (it.submitted ? " — submitted" : "");
 
-        const meta = document.createElement("div");
-        meta.className = "muted" + (isOverdue(it) ? " overdue" : "");
-        meta.textContent = `Due: ${new Date(it.due).toLocaleString()}` +
-          (isOverdue(it) ? " — OVERDUE" : "") +
-          (it.submitted ? " — submitted" : "");
+      const badge = document.createElement("span");
+      badge.className = "badge";
+      badge.textContent = it.repeat === "weekly" ? "Weekly" : "Once";
 
-        const badge = document.createElement("span");
-        badge.className = "badge";
-        badge.textContent = it.repeat === "weekly" ? "Weekly" : "Once";
+      const actions = document.createElement("div");
+      actions.className = "row";
 
-        info.append(title, document.createElement("br"), meta, badge);
+      const doneBtn = document.createElement("button");
+      doneBtn.className = "success";
+      doneBtn.textContent = it.repeat === "weekly" ? "Submitted (next week)" : "Mark submitted";
+      doneBtn.onclick = () => markSubmitted(it.id);
 
-        const actions = document.createElement("div");
-        actions.className = "actions";
+      const delBtn = document.createElement("button");
+      delBtn.className = "danger";
+      delBtn.textContent = "Delete";
+      delBtn.onclick = () => deleteItem(it.id);
 
-        const doneBtn = document.createElement("button");
-        doneBtn.className = "success";
-        doneBtn.textContent = it.repeat === "weekly" ? "Submitted (next week)" : "Mark submitted";
-        doneBtn.onclick = () => markSubmitted(it.id);
-
-        const delBtn = document.createElement("button");
-        delBtn.className = "danger";
-        delBtn.textContent = "Delete";
-        delBtn.onclick = () => deleteItem(it.id);
-
-        actions.append(doneBtn, delBtn);
-        row.append(info, actions);
-        list.appendChild(row);
-      });
+      actions.append(doneBtn, delBtn);
+      row.append(title, document.createElement("br"), meta, badge, actions);
+      list.appendChild(row);
+    });
   }
 
   // ---------- Actions ----------
-  function markSubmitted(id) {
+  async function markSubmitted(id) {
     const it = items.find(x => x.id === id);
     if (!it) return;
     if (it.repeat === "weekly") {
-      // Move to the next week's deadline instead of finishing it
       it.due = new Date(new Date(it.due).getTime() + WEEK_MS).toISOString();
       it.submitted = false;
+      save();
+      await scheduleNative(it);
     } else {
       it.submitted = true;
+      save();
+      await cancelNative(it);
     }
-    save();
     render();
     renderAlerts();
   }
 
-  function deleteItem(id) {
+  async function deleteItem(id) {
     if (!confirm("Delete this reminder?")) return;
+    const it = items.find(x => x.id === id);
+    if (it) await cancelNative(it);
     items = items.filter(x => x.id !== id);
     save();
     render();
     renderAlerts();
   }
 
-  $("form").addEventListener("submit", e => {
+  $("form").addEventListener("submit", async e => {
     e.preventDefault();
-    items.push({
+    const it = {
       id: uid(),
       title: $("title").value.trim(),
       due: new Date($("due").value).toISOString(),
       lead: Number($("lead").value) || 0,
       repeat: $("repeat").value,
       submitted: false
-    });
+    };
+    items.push(it);
     save();
     e.target.reset();
     $("lead").value = 60;
+    await scheduleNative(it);
     render();
     renderAlerts();
   });
 
-  // ---------- Notifications ----------
-  function updateNotifyStatus() {
+  // ---------- Permissions ----------
+  async function updateNotifyStatus() {
+    if (LN) {
+      const p = await LN.checkPermissions();
+      $("notifyStatus").textContent = "Permission: " + p.display;
+      return;
+    }
     if (!("Notification" in window)) {
-      $("notifyStatus").textContent = "Browser notifications not supported here.";
+      $("notifyStatus").textContent = "Notifications not supported here.";
       $("notifyBtn").disabled = true;
       return;
     }
@@ -215,35 +241,40 @@
   }
 
   $("notifyBtn").onclick = async () => {
-    if (!("Notification" in window)) return;
-    await Notification.requestPermission();
+    if (LN) await LN.requestPermissions();
+    else if ("Notification" in window) await Notification.requestPermission();
     updateNotifyStatus();
   };
 
-  function checkReminders() {
+  // Browser fallback (only used when running in a web browser, not the Android app)
+  function checkWebNotifications() {
+    if (LN) return;
     const now = Date.now();
     items.forEach(it => {
       if (it.submitted) return;
-      const key = it.id + "|" + it.due; // one alert per deadline
+      const key = it.id + "|" + it.due;
       if (now >= remindAt(it) && !notified.has(key)) {
         notified.add(key);
         if ("Notification" in window && Notification.permission === "granted") {
-          new Notification("Submit: " + it.title, {
-            body: "Due " + new Date(it.due).toLocaleString()
-          });
+          new Notification("Submit: " + it.title, { body: "Due " + new Date(it.due).toLocaleString() });
         }
       }
     });
-    renderAlerts();
-    render();
   }
 
   // ---------- Start ----------
-  updateNotifyStatus();
-  render();
-  checkReminders();
-  setInterval(checkReminders, 30 * 1000); // check every 30 seconds
+  async function init() {
+    await updateNotifyStatus();
+    if (LN) {
+      // Make sure every pending deadline has its notifications scheduled
+      for (const it of items) await scheduleNative(it);
+    }
+    render();
+    renderAlerts();
+    checkWebNotifications();
+    setInterval(() => { checkWebNotifications(); renderAlerts(); }, 30 * 1000);
+  }
+  init();
 </script>
-
 </body>
 </html>
