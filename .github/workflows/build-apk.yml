@@ -35,6 +35,16 @@ jobs:
       - name: Sync web files into Android
         run: npx cap sync android
 
+      - name: Set app icon
+        run: |
+          RES=android/app/src/main/res
+          for d in mdpi:48 hdpi:72 xhdpi:96 xxhdpi:144 xxxhdpi:192; do
+            dir=${d%%:*}
+            mkdir -p "$RES/mipmap-$dir"
+            cp "ic_launcher_$dir.png" "$RES/mipmap-$dir/ic_launcher.png"
+            cp "ic_launcher_$dir.png" "$RES/mipmap-$dir/ic_launcher_round.png"
+          done
+
       - name: Build debug APK
         working-directory: android
         run: |
