@@ -38,6 +38,8 @@ jobs:
       - name: Set app icon
         run: |
           RES=android/app/src/main/res
+          # Android 8+ uses adaptive icon XML files that override PNGs, so remove them
+          rm -f "$RES"/mipmap-anydpi-v26/ic_launcher*.xml
           for d in mdpi:48 hdpi:72 xhdpi:96 xxhdpi:144 xxxhdpi:192; do
             dir=${d%%:*}
             mkdir -p "$RES/mipmap-$dir"
