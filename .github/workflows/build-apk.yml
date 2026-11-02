@@ -1,1 +1,48 @@
+name: Build Android APK
 
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install packages
+        run: npm install
+
+      - name: Copy web files
+        run: npm run build
+
+      - name: Create Android project if missing
+        run: |
+          if [ ! -d android ]; then npx cap add android; fi
+
+      - name: Sync web files into Android
+        run: npx cap sync android
+
+      - name: Build debug APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: schedule-reminder-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
